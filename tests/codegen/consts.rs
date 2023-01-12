@@ -54,3 +54,10 @@ pub fn high_align_const() -> E<i16, i32> {
     // CHECK: memcpy.{{.+}}({{i8\*|ptr}} align 4 %{{[0-9]+}}, {{i8\*|ptr}} align 4 {{.*}}[[LOW_HIGH]]{{.*}}, i{{(32|64)}} 8, i1 false)
     *&E::A(0)
 }
+
+// CHECK-LABEL: @array_const
+#[no_mangle]
+pub fn array_const() -> [u64; 8] {
+    // CHECK: store [8 x i64] [i64 0, i64 1, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7], {{i8\*|ptr}} %{{[0-9]+}}, align 8
+    [0, 1, 2, 3, 4, 5, 6, 7]
+}

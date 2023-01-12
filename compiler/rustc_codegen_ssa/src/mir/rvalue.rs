@@ -117,18 +117,34 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     }
                     _ => (dest, None),
                 };
-                for (i, operand) in operands.iter().enumerate() {
-                    let op = self.codegen_operand(bx, operand);
-                    // Do not generate stores and GEPis for zero-sized fields.
-                    if !op.layout.is_zst() {
-                        let field_index = active_field_index.unwrap_or(i);
-                        let field = if let mir::AggregateKind::Array(_) = **kind {
-                            let llindex = bx.cx().const_usize(field_index as u64);
-                            dest.project_index(bx, llindex)
+                let is_array = matches!(**kind, mir::AggregateKind::Array(_));
+                if is_array && !operands.is_empty() &&
+                    let Some(consts) = operands.iter().map(|op| {
+                        if matches!(op, Operand::Constant(_)) {
+                            Some(self.codegen_operand(bx, op))
                         } else {
-                            dest.project_field(bx, field_index)
-                        };
-                        op.val.store(bx, field);
+                            None
+                        }
+                    }).collect::<Option<Vec<_>>>()
+                {
+                    let ty = bx.backend_type(consts[0].layout);
+                    let values = consts.into_iter().map(OperandRef::immediate).collect::<Vec<_>>();
+                    let arr = bx.cx().const_array(ty, &values);
+                    bx.store(arr, dest.llval, dest.align);
+                } else {
+                    for (i, operand) in operands.iter().enumerate() {
+                        let op = self.codegen_operand(bx, operand);
+                        // Do not generate stores and GEPis for zero-sized fields.
+                        if !op.layout.is_zst() {
+                            let field_index = active_field_index.unwrap_or(i);
+                            let field = if is_array {
+                                let llindex = bx.cx().const_usize(field_index as u64);
+                                dest.project_index(bx, llindex)
+                            } else {
+                                dest.project_field(bx, field_index)
+                            };
+                            op.val.store(bx, field);
+                        }
                     }
                 }
             }

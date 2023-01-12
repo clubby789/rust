@@ -148,6 +148,11 @@ impl<'gcc, 'tcx> ConstMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
         self.context.new_struct_constructor(None, struct_type.as_type(), None, values)
     }
 
+    fn const_array(&self, ty: Type<'gcc>, elts: &[RValue<'gcc>]) -> RValue<'gcc> {
+        let typ = self.context.new_array_type(None, ty, elts.len() as i32);
+        self.context.new_array_constructor(None, typ, elts)
+    }
+
     fn const_to_opt_uint(&self, _v: RValue<'gcc>) -> Option<u64> {
         // TODO(antoyo)
         None

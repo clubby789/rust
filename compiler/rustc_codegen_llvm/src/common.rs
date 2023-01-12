@@ -297,6 +297,10 @@ impl<'ll, 'tcx> ConstMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         const_alloc_to_llvm(self, alloc)
     }
 
+    fn const_array(&self, ty: Self::Type, elts: &[Self::Value]) -> Self::Value {
+        CodegenCx::const_array(&self, &ty, elts)
+    }
+
     fn from_const_alloc(
         &self,
         layout: TyAndLayout<'tcx>,

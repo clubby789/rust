@@ -26,8 +26,11 @@ use rustc_session::Session;
 use rustc_span::hygiene::DesugaringKind;
 use rustc_span::Span;
 
-pub(crate) fn check_match(tcx: TyCtxt<'_>, def_id: LocalDefId) {
-    let Ok((thir, expr)) = tcx.thir_body(def_id) else { return };
+pub(crate) fn check_match(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Result<(), ErrorGuaranteed> {
+    let (thir, expr) = match tcx.thir_body(def_id) {
+        Ok((thir, expr)) => (thir, expr),
+        Err(e) => return Err(e),
+    };
     let thir = thir.borrow();
     let pattern_arena = TypedArena::default();
     let mut visitor = MatchVisitor {
@@ -37,13 +40,18 @@ pub(crate) fn check_match(tcx: TyCtxt<'_>, def_id: LocalDefId) {
         lint_level: tcx.hir().local_def_id_to_hir_id(def_id),
         let_source: LetSource::None,
         pattern_arena: &pattern_arena,
+        errors: vec![],
     };
     visitor.visit_expr(&thir[expr]);
+    if let Some(e) = visitor.errors.first() {
+        return Err(*e);
+    }
     for param in thir.params.iter() {
         if let Some(box ref pattern) = param.pat {
-            visitor.check_irrefutable(pattern, "function argument", None);
+            visitor.check_irrefutable(pattern, "function argument", None)?;
         }
     }
+    Ok(())
 }
 
 fn create_e0004(
@@ -77,6 +85,7 @@ struct MatchVisitor<'a, 'p, 'tcx> {
     lint_level: HirId,
     let_source: LetSource,
     pattern_arena: &'p TypedArena<DeconstructedPat<'p, 'tcx>>,
+    errors: Vec<ErrorGuaranteed>,
 }
 
 impl<'a, 'tcx> Visitor<'a, 'tcx> for MatchVisitor<'a, '_, 'tcx> {
@@ -139,7 +148,9 @@ impl<'a, 'tcx> Visitor<'a, 'tcx> for MatchVisitor<'a, '_, 'tcx> {
                     Some(DesugaringKind::Await) => hir::MatchSource::AwaitDesugar,
                     _ => hir::MatchSource::Normal,
                 };
-                self.check_match(scrutinee, arms, source, ex.span);
+                if let Err(e) = self.check_match(scrutinee, arms, source, ex.span) {
+                    self.errors.push(e)
+                }
             }
             ExprKind::Let { box ref pat, expr } => {
                 self.check_let(pat, expr, self.let_source, ex.span);
@@ -166,8 +177,9 @@ impl<'a, 'tcx> Visitor<'a, 'tcx> for MatchVisitor<'a, '_, 'tcx> {
                     self.check_let(pattern, initializer, LetSource::LetElse, span);
                 }
 
-                if else_block.is_none() {
-                    self.check_irrefutable(pattern, "local binding", Some(span));
+                if else_block.is_none()
+                    && let Err(e) = self.check_irrefutable(pattern, "local binding", Some(span)) {
+                        self.errors.push(e);
                 }
             }
             _ => {}
@@ -226,7 +238,7 @@ impl<'p, 'tcx> MatchVisitor<'_, 'p, 'tcx> {
         arms: &[ArmId],
         source: hir::MatchSource,
         expr_span: Span,
-    ) {
+    ) -> Result<(), ErrorGuaranteed> {
         let mut cx = self.new_cx(self.lint_level, true);
 
         for &arm in arms {
@@ -274,13 +286,14 @@ impl<'p, 'tcx> MatchVisitor<'_, 'p, 'tcx> {
                 debug_assert_eq!(pat.span.desugaring_kind(), Some(DesugaringKind::ForLoop));
                 let PatKind::Variant { ref subpatterns, .. } = pat.kind else { bug!() };
                 let [pat_field] = &subpatterns[..] else { bug!() };
-                self.check_irrefutable(&pat_field.pattern, "`for` loop binding", None);
+                self.check_irrefutable(&pat_field.pattern, "`for` loop binding", None)?;
             } else {
-                non_exhaustive_match(
+                return Err(non_exhaustive_match(
                     &cx, self.thir, scrut_ty, scrut.span, witnesses, arms, expr_span,
-                );
+                ));
             }
         }
+        Ok(())
     }
 
     fn check_let_reachability(
@@ -409,7 +422,12 @@ impl<'p, 'tcx> MatchVisitor<'_, 'p, 'tcx> {
     }
 
     #[instrument(level = "trace", skip(self))]
-    fn check_irrefutable(&self, pat: &Pat<'tcx>, origin: &str, sp: Option<Span>) {
+    fn check_irrefutable(
+        &self,
+        pat: &Pat<'tcx>,
+        origin: &str,
+        sp: Option<Span>,
+    ) -> Result<(), ErrorGuaranteed> {
         let mut cx = self.new_cx(self.lint_level, false);
 
         let pattern = self.lower_pattern(&mut cx, pat);
@@ -423,7 +441,7 @@ impl<'p, 'tcx> MatchVisitor<'_, 'p, 'tcx> {
         if witnesses.is_empty() {
             // The pattern is irrefutable.
             self.check_patterns(pat, Irrefutable);
-            return;
+            return Ok(());
         }
 
         let inform = sp.is_some().then_some(Inform);
@@ -478,7 +496,7 @@ impl<'p, 'tcx> MatchVisitor<'_, 'p, 'tcx> {
             AdtDefinedHere { adt_def_span, ty, variants }
         };
 
-        self.tcx.sess.emit_err(PatternNotCovered {
+        Err(self.tcx.sess.emit_err(PatternNotCovered {
             span: pat.span,
             origin,
             uncovered: Uncovered::new(pat.span, &cx, witnesses),
@@ -489,7 +507,7 @@ impl<'p, 'tcx> MatchVisitor<'_, 'p, 'tcx> {
             let_suggestion,
             misc_suggestion,
             adt_defined_here,
-        });
+        }))
     }
 }
 
@@ -631,7 +649,7 @@ fn non_exhaustive_match<'p, 'tcx>(
     witnesses: Vec<DeconstructedPat<'p, 'tcx>>,
     arms: &[ArmId],
     expr_span: Span,
-) {
+) -> ErrorGuaranteed {
     let is_empty_match = arms.is_empty();
     let non_empty_enum = match scrut_ty.kind() {
         ty::Adt(def, _) => def.is_enum() && !def.variants().is_empty(),
@@ -643,13 +661,12 @@ fn non_exhaustive_match<'p, 'tcx>(
     let pattern;
     let patterns_len;
     if is_empty_match && !non_empty_enum {
-        cx.tcx.sess.emit_err(NonExhaustivePatternsTypeNotEmpty {
+        return cx.tcx.sess.emit_err(NonExhaustivePatternsTypeNotEmpty {
             cx,
             expr_span,
             span: sp,
             ty: scrut_ty,
         });
-        return;
     } else {
         // FIXME: migration of this diagnostic will require list support
         let joined_patterns = joined_uncovered_patterns(cx, &witnesses);
@@ -800,7 +817,7 @@ fn non_exhaustive_match<'p, 'tcx>(
     } else {
         err.help(&msg);
     }
-    err.emit();
+    err.emit()
 }
 
 pub(crate) fn joined_uncovered_patterns<'p, 'tcx>(

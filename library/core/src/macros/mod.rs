@@ -32,12 +32,12 @@ macro_rules! panic {
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[cfg_attr(not(test), rustc_diagnostic_item = "assert_eq_macro")]
-#[allow_internal_unstable(panic_internals)]
+#[allow_internal_unstable(panic_internals, core_intrinsics)]
 macro_rules! assert_eq {
     ($left:expr, $right:expr $(,)?) => {
         match (&$left, &$right) {
             (left_val, right_val) => {
-                if !(*left_val == *right_val) {
+                if $crate::intrinsics::unlikely(!(*left_val == *right_val)) {
                     let kind = $crate::panicking::AssertKind::Eq;
                     // The reborrows below are intentional. Without them, the stack slot for the
                     // borrow is initialized even before the values are compared, leading to a
@@ -50,7 +50,7 @@ macro_rules! assert_eq {
     ($left:expr, $right:expr, $($arg:tt)+) => {
         match (&$left, &$right) {
             (left_val, right_val) => {
-                if !(*left_val == *right_val) {
+                if $crate::intrinsics::unlikely(!(*left_val == *right_val)) {
                     let kind = $crate::panicking::AssertKind::Eq;
                     // The reborrows below are intentional. Without them, the stack slot for the
                     // borrow is initialized even before the values are compared, leading to a
@@ -82,12 +82,12 @@ macro_rules! assert_eq {
 #[macro_export]
 #[stable(feature = "assert_ne", since = "1.13.0")]
 #[cfg_attr(not(test), rustc_diagnostic_item = "assert_ne_macro")]
-#[allow_internal_unstable(panic_internals)]
+#[allow_internal_unstable(panic_internals, core_intrinsics)]
 macro_rules! assert_ne {
     ($left:expr, $right:expr $(,)?) => {
         match (&$left, &$right) {
             (left_val, right_val) => {
-                if *left_val == *right_val {
+                if $crate::intrinsics::unlikely(*left_val == *right_val) {
                     let kind = $crate::panicking::AssertKind::Ne;
                     // The reborrows below are intentional. Without them, the stack slot for the
                     // borrow is initialized even before the values are compared, leading to a
@@ -100,7 +100,7 @@ macro_rules! assert_ne {
     ($left:expr, $right:expr, $($arg:tt)+) => {
         match (&($left), &($right)) {
             (left_val, right_val) => {
-                if *left_val == *right_val {
+                if $crate::intrinsics::unlikely(*left_val == *right_val) {
                     let kind = $crate::panicking::AssertKind::Ne;
                     // The reborrows below are intentional. Without them, the stack slot for the
                     // borrow is initialized even before the values are compared, leading to a

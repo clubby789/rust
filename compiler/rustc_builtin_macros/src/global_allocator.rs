@@ -23,7 +23,6 @@ pub(crate) fn expand(
     let orig_item = item.clone();
 
     // Allow using `#[global_allocator]` on an item statement
-    // FIXME - if we get deref patterns, use them to reduce duplication here
     let (item, ident, is_stmt, ty_span) = if let Annotatable::Item(item) = &item
         && let ItemKind::Static(box ast::StaticItem { ident, ty, .. }) = &item.kind
     {
@@ -109,6 +108,8 @@ impl AllocFnFactory<'_, '_> {
             _ => unreachable!("Unknown allocator method!"),
         };
         thin_vec![
+            // Inlining causes loss of allocator attributes which are useful to LLVM
+            self.cx.attr_nested_word(sym::inline, sym::never, self.span),
             self.cx.attr_word(sym::rustc_std_internal_symbol, self.span),
             self.cx.attr_word(alloc_attr, self.span)
         ]
